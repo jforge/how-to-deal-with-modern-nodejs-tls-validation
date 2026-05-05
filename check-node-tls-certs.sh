@@ -98,6 +98,77 @@ run_check() {
   fi
 }
 
+diagnose_ca_cert() {
+  local cert_file="$1"
+  local text
+  text=$(openssl x509 -in "$cert_file" -noout -text 2>/dev/null)
+
+  local found_issue=0
+
+  # Basic Constraints
+  if ! echo "$text" | grep -q "X509v3 Basic Constraints:"; then
+    echo "    ISSUE: Missing X509v3 Basic Constraints extension"
+    found_issue=1
+  elif ! echo "$text" | grep -A2 "X509v3 Basic Constraints:" | grep -q "CA:TRUE"; then
+    local bc_value
+    bc_value=$(echo "$text" | grep -A2 "X509v3 Basic Constraints:" | grep -v "X509v3 Basic Constraints:" | head -1 | xargs)
+    echo "    ISSUE: X509v3 Basic Constraints present but CA:TRUE is not set (found: ${bc_value:-<empty>})"
+    found_issue=1
+  fi
+
+  # Key Usage
+  if ! echo "$text" | grep -q "X509v3 Key Usage:"; then
+    echo "    ISSUE: Missing X509v3 Key Usage extension (Certificate Sign required for CA)"
+    found_issue=1
+  elif ! echo "$text" | grep -A2 "X509v3 Key Usage:" | grep -q "Certificate Sign"; then
+    local ku_value
+    ku_value=$(echo "$text" | grep -A2 "X509v3 Key Usage:" | grep -v "X509v3 Key Usage:" | head -1 | xargs)
+    echo "    ISSUE: X509v3 Key Usage present but Certificate Sign (keyCertSign) is not set (found: ${ku_value:-<empty>})"
+    found_issue=1
+  fi
+
+  # Subject Key Identifier (required by RFC 5280 §4.2.1.2 for CA certs)
+  if ! echo "$text" | grep -q "X509v3 Subject Key Identifier:"; then
+    echo "    ISSUE: Missing X509v3 Subject Key Identifier (required by RFC 5280 for CA certs)"
+    found_issue=1
+  fi
+
+  # Authority Key Identifier (required for non-self-signed certs per RFC 5280 §4.2.1.1)
+  local subject issuer
+  subject=$(openssl x509 -in "$cert_file" -noout -subject 2>/dev/null)
+  issuer=$(openssl x509 -in "$cert_file" -noout -issuer 2>/dev/null)
+  if [[ "$subject" != "$issuer" ]] && ! echo "$text" | grep -q "X509v3 Authority Key Identifier:"; then
+    echo "    ISSUE: Missing X509v3 Authority Key Identifier (required by RFC 5280 for non-self-signed CA certs)"
+    found_issue=1
+  fi
+
+  if [[ "$found_issue" -eq 0 ]]; then
+    echo "    (no structural issues detected)"
+  fi
+}
+
+diagnose_bundle() {
+  local file="$1"
+  local label="$2"
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  awk -v dir="$tmpdir" '
+    /-----BEGIN CERTIFICATE-----/ { idx++; outfile=dir "/" idx ".pem" }
+    outfile { print > outfile }
+    /-----END CERTIFICATE-----/ { close(outfile); outfile="" }
+  ' "$file"
+
+  for cert_file in "$tmpdir"/*.pem; do
+    [[ -f "$cert_file" ]] || continue
+    subject=$(openssl x509 -in "$cert_file" -noout -subject 2>/dev/null)
+    echo
+    echo "  [$label] $subject"
+    diagnose_ca_cert "$cert_file"
+  done
+  rm -rf "$tmpdir"
+}
+
 plain_ok=0
 strict_ok=0
 level1_ok=0
@@ -136,6 +207,13 @@ LEVEL2_CMD+=( "$SERVER_CERT" )
 
 if run_check "X.509 strict verify (-x509_strict)" "${STRICT_CMD[@]}"; then
   strict_ok=1
+else
+  echo
+  echo "== CA Certificate Diagnosis =="
+  diagnose_bundle "$ROOTS" "Root CA"
+  if [[ -n "$INTERMEDIATES" ]]; then
+    diagnose_bundle "$INTERMEDIATES" "Intermediate CA"
+  fi
 fi
 
 if run_check "Security level 1 (-auth_level 1)" "${LEVEL1_CMD[@]}"; then
@@ -160,6 +238,7 @@ fi
 if [[ "$plain_ok" -eq 1 && "$strict_ok" -eq 0 ]]; then
   echo "- Plain verify passed but X.509 strict failed."
   echo "  This points to certificate structure / RFC-conformance issues, not basic trust."
+  echo "  See 'CA Certificate Diagnosis' above for the exact problem(s) found."
 fi
 
 if [[ "$level1_ok" -eq 1 && "$level2_ok" -eq 0 ]]; then
