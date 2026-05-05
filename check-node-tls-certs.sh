@@ -171,8 +171,7 @@ diagnose_bundle() {
 
 plain_ok=0
 strict_ok=0
-level1_ok=0
-level2_ok=0
+level_results=()   # indexed 0-5, value 1=pass 0=fail
 
 echo "Certificate summary"
 echo "-------------------"
@@ -194,16 +193,10 @@ if run_check "Plain verify" "${OPENSSL_BASE[@]}"; then
 fi
 
 STRICT_CMD=(openssl verify -purpose "$PURPOSE" -x509_strict -show_chain -CAfile "$ROOTS")
-LEVEL1_CMD=(openssl verify -purpose "$PURPOSE" -auth_level 1 -show_chain -CAfile "$ROOTS")
-LEVEL2_CMD=(openssl verify -purpose "$PURPOSE" -auth_level 2 -show_chain -CAfile "$ROOTS")
 if [[ -n "$INTERMEDIATES" ]]; then
   STRICT_CMD+=( -untrusted "$INTERMEDIATES" )
-  LEVEL1_CMD+=( -untrusted "$INTERMEDIATES" )
-  LEVEL2_CMD+=( -untrusted "$INTERMEDIATES" )
 fi
 STRICT_CMD+=( "$SERVER_CERT" )
-LEVEL1_CMD+=( "$SERVER_CERT" )
-LEVEL2_CMD+=( "$SERVER_CERT" )
 
 if run_check "X.509 strict verify (-x509_strict)" "${STRICT_CMD[@]}"; then
   strict_ok=1
@@ -216,13 +209,18 @@ else
   fi
 fi
 
-if run_check "Security level 1 (-auth_level 1)" "${LEVEL1_CMD[@]}"; then
-  level1_ok=1
-fi
-
-if run_check "Security level 2 (-auth_level 2)" "${LEVEL2_CMD[@]}"; then
-  level2_ok=1
-fi
+for lvl in 0 1 2 3 4 5; do
+  LEVEL_CMD=(openssl verify -purpose "$PURPOSE" -auth_level "$lvl" -show_chain -CAfile "$ROOTS")
+  if [[ -n "$INTERMEDIATES" ]]; then
+    LEVEL_CMD+=( -untrusted "$INTERMEDIATES" )
+  fi
+  LEVEL_CMD+=( "$SERVER_CERT" )
+  if run_check "Security level $lvl (-auth_level $lvl)" "${LEVEL_CMD[@]}"; then
+    level_results[$lvl]=1
+  else
+    level_results[$lvl]=0
+  fi
+done
 
 echo
 echo "Interpretation"
@@ -241,17 +239,47 @@ if [[ "$plain_ok" -eq 1 && "$strict_ok" -eq 0 ]]; then
   echo "  See 'CA Certificate Diagnosis' above for the exact problem(s) found."
 fi
 
-if [[ "$level1_ok" -eq 1 && "$level2_ok" -eq 0 ]]; then
-  echo "- Auth level 1 passed but auth level 2 failed."
-  echo "  This strongly suggests the chain is too weak for Node.js environments using SECLEVEL=2."
-  echo "  Likely causes: RSA/DSA/DH key < 2048 bits, ECC key < 224 bits, or other weak crypto choices."
+# Security level descriptions for interpretation
+level_desc=(
+  [0]="no security constraints (everything permitted)"
+  [1]=">=80-bit: RSA/DSA/DH>=1024, ECC>=160; SHA-1 allowed"
+  [2]=">=112-bit: RSA/DSA/DH>=2048, ECC>=224; SHA-1 not for certs (Node.js default)"
+  [3]=">=128-bit: RSA/DSA/DH>=3072, ECC>=256; SHA-256+"
+  [4]=">=192-bit: RSA/DSA/DH>=7680, ECC>=384; SHA-384+"
+  [5]=">=256-bit: RSA/DSA/DH>=15360, ECC>=512; SHA-512+"
+)
+
+highest_passing=-1
+for lvl in 0 1 2 3 4 5; do
+  if [[ "${level_results[$lvl]:-0}" -eq 1 ]]; then
+    highest_passing=$lvl
+  fi
+done
+
+echo "- Security level results:"
+for lvl in 0 1 2 3 4 5; do
+  if [[ "${level_results[$lvl]:-0}" -eq 1 ]]; then
+    marker="PASS"
+  else
+    marker="FAIL"
+  fi
+  suffix=""
+  if [[ "$lvl" -eq 2 ]]; then suffix=" <-- Node.js default"; fi
+  echo "    level $lvl [$marker]  ${level_desc[$lvl]}${suffix}"
+done
+
+if [[ "$highest_passing" -eq -1 ]]; then
+  echo "- WARN: Failed even at level 0. Something is fundamentally wrong with the chain."
+elif [[ "$highest_passing" -eq 5 ]]; then
+  echo "- Passes all security levels."
+else
+  next=$(( highest_passing + 1 ))
+  echo "- Highest passing level: $highest_passing. Fails at level $next (${level_desc[$next]})."
+  if [[ "$next" -le 2 ]]; then
+    echo "  The chain will be rejected by Node.js (default SECLEVEL=2)."
+  fi
 fi
 
-if [[ "$plain_ok" -eq 1 && "$level2_ok" -eq 1 ]]; then
-  echo "- The chain passed auth level 2."
-  echo "  It is unlikely to be rejected by Node.js purely because of the default OpenSSL security level."
-fi
-
-if [[ "$plain_ok" -eq 1 && "$strict_ok" -eq 1 && "$level2_ok" -eq 1 ]]; then
+if [[ "$plain_ok" -eq 1 && "$strict_ok" -eq 1 && "${level_results[2]:-0}" -eq 1 ]]; then
   echo "- Overall: looks good for modern Node.js defaults."
 fi
