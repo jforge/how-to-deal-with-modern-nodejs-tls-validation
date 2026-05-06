@@ -176,6 +176,13 @@ level_results=()   # indexed 0-5, value 1=pass 0=fail
 echo "Certificate summary"
 echo "-------------------"
 openssl x509 -in "$SERVER_CERT" -noout -subject -issuer -dates || true
+
+if ! openssl x509 -in "$SERVER_CERT" -noout -checkend 0 2>/dev/null; then
+  echo
+  echo "ERROR: Certificate is expired. Stopping."
+  exit 1
+fi
+
 echo
 echo "Key/signature summary"
 openssl x509 -in "$SERVER_CERT" -noout -text \
