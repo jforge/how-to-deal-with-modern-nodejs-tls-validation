@@ -285,7 +285,7 @@ The default behavior is verification **on**.
 
 ref: [Node.js+1](https://nodejs.org/api/tls.html)
 
-### How to check whether Node would reject a certificate set because of security level
+### How to check whether Node would reject a certificate set because of the security level
 
 Use **OpenSSL `verify`** first. It is the cleanest offline pre-check.
 
@@ -347,7 +347,7 @@ Interpretation:
   This strongly points to a **security-level** rejection, which is exactly the category that matters for current Node defaults. 
   OpenSSL defines `-auth_level` as the minimum acceptable signature/public-key strength for chain verification. 
 
-  ref: [docs.openssl.org+2docs.openssl.org+2](https://docs.openssl.org/master/man1/openssl-verification-options/)
+  ref: [docs.openssl.org+2](https://docs.openssl.org/master/man1/openssl-verification-options/)
 
 * **both fail**  
   The problem is probably more basic: missing trust anchor, bad chain order, wrong issuer, expired cert, unsupported purpose, 
@@ -371,7 +371,7 @@ Look at:
 
 OpenSSL’s `x509 -text` output includes those details, and they are the fields most relevant to both `-x509_strict` and `-auth_level`.
 
-ref: [docs.openssl.org+2docs.openssl.org+2](https://docs.openssl.org/3.0/man1/openssl-x509/?utm_source=chatgpt.com)
+ref: [docs.openssl.org+2](https://docs.openssl.org/3.0/man1/openssl-x509/?utm_source=chatgpt.com)
 
 ### Practical recommendation
 
@@ -409,7 +409,7 @@ That lets you distinguish:
 * security-level rejection that would matter for modern Node defaults. 
   OpenSSL documents `-x509_strict` and `-auth_level` exactly for these purposes. 
 
-  ref: [docs.openssl.org+2docs.openssl.org+2](https://docs.openssl.org/master/man1/openssl-verification-options/?utm_source=chatgpt.com)
+  ref: [docs.openssl.org+2](https://docs.openssl.org/master/man1/openssl-verification-options/?utm_source=chatgpt.com)
 
 
 Example usage:
